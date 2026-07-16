@@ -1,0 +1,24 @@
+-- Loader for AutoClicker
+local scriptUrl = "https://yourdomain.com/autoclicker.lua"  -- change to your URL
+
+local function loadAutoClicker()
+    local ok, source = pcall(game.HttpGet, game, scriptUrl)
+    if not ok or type(source) ~= "string" or source == "" then
+        pcall(function()
+            notify("Failed to load AutoClicker", "AutoClicker Loader", 5)
+        end)
+        return
+    end
+
+    local loadOk, loaded = pcall(loadstring, source)
+    if not loadOk or type(loaded) ~= "function" then
+        pcall(function()
+            notify("AutoClicker script failed to compile", "AutoClicker Loader", 5)
+        end)
+        return
+    end
+
+    task.spawn(loaded)
+end
+
+loadAutoClicker()
