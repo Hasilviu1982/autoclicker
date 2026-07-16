@@ -1,0 +1,466 @@
+--[[
+    Matcha AutoClicker – Standalone, with built-in tabbed UI.
+    All property names match the Drawing API docs.
+    No external dependencies.
+]]
+
+-- ============================================================
+-- 1. SETUP
+-- ============================================================
+local Players = game:GetService("Players")
+local LocalPlayer = Players.LocalPlayer
+local Mouse = LocalPlayer:GetMouse()
+
+-- ============================================================
+-- 2. STATE
+-- ============================================================
+local state = {
+    running = false,
+    clickType = "left",
+    interval = 500,            -- ms
+    clickCount = 0,
+    hotkey = 0x71,             -- F2
+    clickThread = nil,
+    pollThread = nil,
+    closeRequested = false,
+    sliderDragging = false,
+}
+
+local MIN_INTERVAL = 50
+local MAX_INTERVAL = 300000   -- 5 minutes
+local STEP = 50
+
+-- ============================================================
+-- 3. DRAWING HELPERS
+-- ============================================================
+local allDrawings = {}
+
+local function newDrawing(kind, props)
+    local obj = Drawing.new(kind)
+    for k, v in pairs(props) do
+        obj[k] = v
+    end
+    obj.Visible = true
+    table.insert(allDrawings, obj)
+    return obj
+end
+
+-- Window geometry
+local WIN_X, WIN_Y = 100, 100
+local WIN_W, WIN_H = 380, 320
+
+-- ============================================================
+-- 4. CREATE UI (tab-style, matching farm stats layout)
+-- ============================================================
+
+-- Main window background
+local bg = newDrawing("Square", {
+    Position = Vector2.new(WIN_X, WIN_Y),
+    Size = Vector2.new(WIN_W, WIN_H),
+    Color = Color3.fromRGB(30, 30, 40),
+    Filled = true,
+    Transparency = 0.15,
+    ZIndex = 1,
+})
+local border = newDrawing("Square", {
+    Position = Vector2.new(WIN_X, WIN_Y),
+    Size = Vector2.new(WIN_W, WIN_H),
+    Color = Color3.fromRGB(255, 255, 255),
+    Filled = false,
+    Transparency = 0.7,
+    ZIndex = 2,
+})
+
+-- Tab title
+local title = newDrawing("Text", {
+    Position = Vector2.new(WIN_X + 20, WIN_Y + 10),
+    Text = "AutoClicker",
+    Color = Color3.fromRGB(255, 215, 0),
+    Font = Drawing.Fonts.UI,
+    FontSize = 18,
+    Center = false,
+    ZIndex = 5,
+})
+
+-- Close button (X)
+local closeBg = newDrawing("Square", {
+    Position = Vector2.new(WIN_X + WIN_W - 30, WIN_Y + 8),
+    Size = Vector2.new(20, 20),
+    Color = Color3.fromRGB(200, 50, 50),
+    Filled = true,
+    ZIndex = 3,
+})
+local closeText = newDrawing("Text", {
+    Position = Vector2.new(WIN_X + WIN_W - 20, WIN_Y + 14),
+    Text = "X",
+    Color = Color3.fromRGB(255, 255, 255),
+    Font = Drawing.Fonts.UI,
+    FontSize = 14,
+    Center = true,
+    ZIndex = 5,
+})
+
+-- Status (like "Status: Running")
+local statusLabel = newDrawing("Text", {
+    Position = Vector2.new(WIN_X + 20, WIN_Y + 45),
+    Text = "Status: Stopped",
+    Color = Color3.fromRGB(255, 100, 100),
+    Font = Drawing.Fonts.UI,
+    FontSize = 15,
+    Center = false,
+    ZIndex = 5,
+})
+
+-- Click counter
+local countLabel = newDrawing("Text", {
+    Position = Vector2.new(WIN_X + 20, WIN_Y + 70),
+    Text = "Clicks: 0",
+    Color = Color3.fromRGB(200, 200, 200),
+    Font = Drawing.Fonts.UI,
+    FontSize = 14,
+    Center = false,
+    ZIndex = 5,
+})
+
+-- "Click Type:" label
+local typeLabel = newDrawing("Text", {
+    Position = Vector2.new(WIN_X + 20, WIN_Y + 100),
+    Text = "Click Type:",
+    Color = Color3.fromRGB(200, 200, 200),
+    Font = Drawing.Fonts.UI,
+    FontSize = 14,
+    Center = false,
+    ZIndex = 5,
+})
+
+-- Left button
+local leftBg = newDrawing("Square", {
+    Position = Vector2.new(WIN_X + 120, WIN_Y + 94),
+    Size = Vector2.new(70, 26),
+    Color = Color3.fromRGB(70, 130, 255),
+    Filled = true,
+    ZIndex = 3,
+})
+local leftBorder = newDrawing("Square", {
+    Position = Vector2.new(WIN_X + 120, WIN_Y + 94),
+    Size = Vector2.new(70, 26),
+    Color = Color3.fromRGB(200, 200, 200),
+    Filled = false,
+    Transparency = 0.3,
+    ZIndex = 4,
+})
+local leftText = newDrawing("Text", {
+    Position = Vector2.new(WIN_X + 155, WIN_Y + 100),
+    Text = "Left",
+    Color = Color3.fromRGB(255, 255, 255),
+    Font = Drawing.Fonts.UI,
+    FontSize = 14,
+    Center = true,
+    ZIndex = 5,
+})
+
+-- Right button
+local rightBg = newDrawing("Square", {
+    Position = Vector2.new(WIN_X + 200, WIN_Y + 94),
+    Size = Vector2.new(70, 26),
+    Color = Color3.fromRGB(60, 60, 80),
+    Filled = true,
+    ZIndex = 3,
+})
+local rightBorder = newDrawing("Square", {
+    Position = Vector2.new(WIN_X + 200, WIN_Y + 94),
+    Size = Vector2.new(70, 26),
+    Color = Color3.fromRGB(200, 200, 200),
+    Filled = false,
+    Transparency = 0.3,
+    ZIndex = 4,
+})
+local rightText = newDrawing("Text", {
+    Position = Vector2.new(WIN_X + 235, WIN_Y + 100),
+    Text = "Right",
+    Color = Color3.fromRGB(255, 255, 255),
+    Font = Drawing.Fonts.UI,
+    FontSize = 14,
+    Center = true,
+    ZIndex = 5,
+})
+
+-- Interval label
+local intervalLabel = newDrawing("Text", {
+    Position = Vector2.new(WIN_X + 20, WIN_Y + 140),
+    Text = "Interval (ms):",
+    Color = Color3.fromRGB(200, 200, 200),
+    Font = Drawing.Fonts.UI,
+    FontSize = 14,
+    Center = false,
+    ZIndex = 5,
+})
+
+-- Interval value display
+local intervalValue = newDrawing("Text", {
+    Position = Vector2.new(WIN_X + 150, WIN_Y + 140),
+    Text = tostring(state.interval),
+    Color = Color3.fromRGB(255, 255, 255),
+    Font = Drawing.Fonts.UI,
+    FontSize = 14,
+    Center = false,
+    ZIndex = 5,
+})
+
+-- Slider track
+local SLIDER_X = WIN_X + 20
+local SLIDER_Y = WIN_Y + 170
+local SLIDER_W = WIN_W - 40
+local SLIDER_H = 6
+local sliderTrack = newDrawing("Square", {
+    Position = Vector2.new(SLIDER_X, SLIDER_Y),
+    Size = Vector2.new(SLIDER_W, SLIDER_H),
+    Color = Color3.fromRGB(100, 100, 120),
+    Filled = true,
+    ZIndex = 3,
+})
+
+-- Slider handle
+local handleRadius = 8
+local handleX = SLIDER_X + (state.interval - MIN_INTERVAL) / (MAX_INTERVAL - MIN_INTERVAL) * SLIDER_W
+local sliderHandle = newDrawing("Circle", {
+    Position = Vector2.new(handleX, SLIDER_Y + SLIDER_H/2),
+    Radius = handleRadius,
+    Color = Color3.fromRGB(200, 200, 220),
+    Filled = true,
+    NumSides = 16,
+    ZIndex = 4,
+})
+
+-- Start/Stop button
+local toggleBg = newDrawing("Square", {
+    Position = Vector2.new(WIN_X + 110, WIN_Y + 210),
+    Size = Vector2.new(110, 35),
+    Color = Color3.fromRGB(50, 200, 50),
+    Filled = true,
+    ZIndex = 3,
+})
+local toggleBorder = newDrawing("Square", {
+    Position = Vector2.new(WIN_X + 110, WIN_Y + 210),
+    Size = Vector2.new(110, 35),
+    Color = Color3.fromRGB(255, 255, 255),
+    Filled = false,
+    Transparency = 0.3,
+    ZIndex = 4,
+})
+local toggleText = newDrawing("Text", {
+    Position = Vector2.new(WIN_X + 165, WIN_Y + 227),
+    Text = "Start",
+    Color = Color3.fromRGB(255, 255, 255),
+    Font = Drawing.Fonts.UI,
+    FontSize = 16,
+    Center = true,
+    ZIndex = 5,
+})
+
+-- Reset button
+local resetBg = newDrawing("Square", {
+    Position = Vector2.new(WIN_X + 230, WIN_Y + 212),
+    Size = Vector2.new(70, 28),
+    Color = Color3.fromRGB(40, 40, 60),
+    Filled = true,
+    ZIndex = 3,
+})
+local resetBorder = newDrawing("Square", {
+    Position = Vector2.new(WIN_X + 230, WIN_Y + 212),
+    Size = Vector2.new(70, 28),
+    Color = Color3.fromRGB(200, 200, 200),
+    Filled = false,
+    Transparency = 0.3,
+    ZIndex = 4,
+})
+local resetText = newDrawing("Text", {
+    Position = Vector2.new(WIN_X + 265, WIN_Y + 226),
+    Text = "Reset",
+    Color = Color3.fromRGB(255, 255, 255),
+    Font = Drawing.Fonts.UI,
+    FontSize = 14,
+    Center = true,
+    ZIndex = 5,
+})
+
+-- Hotkey label
+local hotkeyLabel = newDrawing("Text", {
+    Position = Vector2.new(WIN_X + 20, WIN_Y + 260),
+    Text = "Hotkey: F2",
+    Color = Color3.fromRGB(150, 150, 150),
+    Font = Drawing.Fonts.UI,
+    FontSize = 12,
+    Center = false,
+    ZIndex = 5,
+})
+
+-- ============================================================
+-- 5. UPDATE FUNCTIONS
+-- ============================================================
+local function updateStatus(running)
+    if running then
+        statusLabel.Text = "Status: Running"
+        statusLabel.Color = Color3.fromRGB(100, 255, 100)
+        toggleText.Text = "Stop"
+        toggleBg.Color = Color3.fromRGB(200, 50, 50)
+    else
+        statusLabel.Text = "Status: Stopped"
+        statusLabel.Color = Color3.fromRGB(255, 100, 100)
+        toggleText.Text = "Start"
+        toggleBg.Color = Color3.fromRGB(50, 200, 50)
+    end
+end
+
+local function updateCount()
+    countLabel.Text = "Clicks: " .. state.clickCount
+end
+
+local function updateIntervalDisplay(val)
+    intervalValue.Text = tostring(val)
+end
+
+local function updateSliderPosition(val)
+    local pos = (val - MIN_INTERVAL) / (MAX_INTERVAL - MIN_INTERVAL)
+    sliderHandle.Position = Vector2.new(SLIDER_X + pos * SLIDER_W, SLIDER_Y + SLIDER_H/2)
+end
+
+local function setInterval(val)
+    val = math.floor(val / STEP) * STEP
+    val = math.max(MIN_INTERVAL, math.min(MAX_INTERVAL, val))
+    state.interval = val
+    updateIntervalDisplay(val)
+    updateSliderPosition(val)
+end
+
+-- ============================================================
+-- 6. CORE LOGIC
+-- ============================================================
+local function clickLoop()
+    while state.running and not state.closeRequested do
+        if state.clickType == "left" then
+            mouse1click()
+        else
+            mouse2click()
+        end
+        state.clickCount = state.clickCount + 1
+        updateCount()
+        wait(state.interval / 1000)
+    end
+end
+
+local function toggleClicker()
+    state.running = not state.running
+    updateStatus(state.running)
+    if state.running then
+        state.clickThread = task.spawn(clickLoop)
+    else
+        state.clickThread = nil
+    end
+end
+
+local function resetCounter()
+    state.clickCount = 0
+    updateCount()
+end
+
+-- ============================================================
+-- 7. POLLING (Mouse + Keyboard)
+-- ============================================================
+local function pollEvents()
+    while not state.closeRequested do
+        local mx, my = Mouse.X, Mouse.Y
+        local leftPressed = ismouse1pressed and ismouse1pressed() or false
+
+        -- Slider dragging
+        if state.sliderDragging then
+            local relX = mx - SLIDER_X
+            relX = math.max(0, math.min(relX, SLIDER_W))
+            local val = MIN_INTERVAL + (relX / SLIDER_W) * (MAX_INTERVAL - MIN_INTERVAL)
+            setInterval(val)
+            if not leftPressed then
+                state.sliderDragging = false
+            end
+        end
+
+        -- Button clicks (only if not dragging)
+        if leftPressed and not state.sliderDragging then
+            -- Close
+            if mx >= closeBg.Position.X and mx <= closeBg.Position.X + 20 and
+               my >= closeBg.Position.Y and my <= closeBg.Position.Y + 20 then
+                state.closeRequested = true
+                break
+            end
+
+            -- Toggle
+            if mx >= toggleBg.Position.X and mx <= toggleBg.Position.X + 110 and
+               my >= toggleBg.Position.Y and my <= toggleBg.Position.Y + 35 then
+                toggleClicker()
+                while ismouse1pressed and ismouse1pressed() do wait(0.02) end
+            end
+
+            -- Left type
+            if mx >= leftBg.Position.X and mx <= leftBg.Position.X + 70 and
+               my >= leftBg.Position.Y and my <= leftBg.Position.Y + 26 then
+                state.clickType = "left"
+                leftBg.Color = Color3.fromRGB(70, 130, 255)
+                rightBg.Color = Color3.fromRGB(60, 60, 80)
+                while ismouse1pressed and ismouse1pressed() do wait(0.02) end
+            end
+
+            -- Right type
+            if mx >= rightBg.Position.X and mx <= rightBg.Position.X + 70 and
+               my >= rightBg.Position.Y and my <= rightBg.Position.Y + 26 then
+                state.clickType = "right"
+                rightBg.Color = Color3.fromRGB(70, 130, 255)
+                leftBg.Color = Color3.fromRGB(60, 60, 80)
+                while ismouse1pressed and ismouse1pressed() do wait(0.02) end
+            end
+
+            -- Reset
+            if mx >= resetBg.Position.X and mx <= resetBg.Position.X + 70 and
+               my >= resetBg.Position.Y and my <= resetBg.Position.Y + 28 then
+                resetCounter()
+                while ismouse1pressed and ismouse1pressed() do wait(0.02) end
+            end
+
+            -- Slider handle drag start
+            local hx = sliderHandle.Position.X
+            local hy = sliderHandle.Position.Y
+            if math.abs(mx - hx) <= handleRadius and math.abs(my - hy) <= handleRadius then
+                state.sliderDragging = true
+            end
+        end
+
+        -- Hotkey F2
+        if iskeypressed and iskeypressed(state.hotkey) then
+            toggleClicker()
+            while iskeypressed and iskeypressed(state.hotkey) do wait(0.02) end
+        end
+
+        wait(0.02)
+    end
+end
+
+-- ============================================================
+-- 8. START POLLING
+-- ============================================================
+state.pollThread = task.spawn(pollEvents)
+
+print("AutoClicker loaded. Press F2 to toggle. Close the GUI to exit.")
+
+-- ============================================================
+-- 9. WAIT FOR CLOSE
+-- ============================================================
+while not state.closeRequested do
+    wait(0.5)
+end
+
+-- ============================================================
+-- 10. CLEANUP
+-- ============================================================
+state.running = false
+for _, obj in ipairs(allDrawings) do
+    pcall(function() obj:Remove() end)
+end
+print("AutoClicker closed.")
