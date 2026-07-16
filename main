@@ -1,5 +1,5 @@
 -- Loader for AutoClicker
-local scriptUrl = "https://yourdomain.com/autoclicker.lua"  -- change to your URL
+local scriptUrl = "https://raw.githubusercontent.com/Hasilviu1982/autoclicker/refs/heads/main/script"  -- change to your URL
 
 local function loadAutoClicker()
     local ok, source = pcall(game.HttpGet, game, scriptUrl)
